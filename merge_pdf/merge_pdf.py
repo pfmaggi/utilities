@@ -31,7 +31,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
-
 from PyPDF2 import PdfReader, PdfWriter
 import argparse
 from pathlib import Path
@@ -39,29 +38,36 @@ from typing import Optional
 
 
 def process_args(
-        front: Path,
-        back: Path,
-        output: Optional[Path] = None) -> None:
+    front: Path,
+    back: Path,
+    output: Optional[Path] = None,
+    overwrite: Optional[bool] = False,
+) -> None:
     """
     Add all the pages alternating fronts and backs
     note: backs are in reverse order
     """
     print(f"Processing {front} and {back}")
-    if output:
-        print(f"Output will be saved to: {output.resolve()}")
+    if not output:
+        output = Path("merged_pdf")
+
+    print(f"Output will be saved to: {output.resolve()}")
 
     # Validate input files exist
     for f in [front, back]:
         if not f.is_file():
             raise FileNotFoundError(f"Input file not found: {f.resolve()}")
 
+    # Check output file exist
+    if output.is_file() and not overwrite:
+        raise FileExistsError(f"Output file already exist: {output.resolve()}")
+
     fronts = PdfReader(front)
     backs = PdfReader(back)
 
-    if (len(backs.pages) != len(fronts.pages)):
+    if len(backs.pages) != len(fronts.pages):
         print(f"Pages {len(fronts.pages)} and {len(backs.pages)}")
-        raise ValueError(
-            "The two input PDFs need to have the same number of pages")
+        raise ValueError("The two input PDFs need to have the same number of pages")
     page_count = 2 * len(backs.pages)
     writer = PdfWriter()
 
@@ -72,7 +78,7 @@ def process_args(
         writer.add_page(backs.pages[-1 - index])
 
     # save the new pdf to a file
-    if (output):
+    if output:
         with open(output.resolve(), "wb") as f:
             writer.write(f)
     else:
@@ -87,27 +93,27 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Merge two PDF, the back pages are expected to be in "
         "reverse order: from last to first.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
     # Required positional arguments
+    parser.add_argument("front", type=Path, help="PDF file with front pages")
     parser.add_argument(
-        "front",
-        type=Path,
-        help="PDF file with front pages"
-    )
-    parser.add_argument(
-        "back",
-        type=Path,
-        help="PDF file with back pages in reverse order"
+        "back", type=Path, help="PDF file with back pages in reverse order"
     )
 
     # Optional output flag
     parser.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         type=Path,
         default=None,
-        help="Optional output filename for the merged PDF"
+        help="Optional output filename for the merged PDF",
+    )
+
+    # Optional overwrite flag
+    parser.add_argument(
+        "-w", "--overwrite", action="store_true", help="Overwrite output file."
     )
 
     return parser.parse_args()
@@ -116,7 +122,7 @@ def parse_arguments() -> argparse.Namespace:
 if __name__ == "__main__":
     try:
         args = parse_arguments()
-        process_args(args.front, args.back, args.output)
-    except (FileNotFoundError, ValueError) as e:
+        process_args(args.front, args.back, args.output, args.overwrite)
+    except (FileNotFoundError, ValueError, FileExistsError) as e:
         print(f"Error: {e}")
         exit(1)
