@@ -88,7 +88,7 @@ def parse(pdf_file_path: str) -> dict[str, str]:
 
     try:
         award_date = re.findall(r".*Award.?Date: (\d{2}-\w{3}-\d{4})", content)[0]
-        award_id = re.findall(r".*Award.?ID: (C\d{6})", content)[0]
+        award_id = re.findall(r".*Award.?ID: (C\d{6,7})", content)[0]
         release_date = re.findall(r".*Release.?Date: (\d{2}-\w{3}-\d{4})", content)[0]
         vest_price = re.findall(r".*FMV.?@.?Vest: (\$\d?,?\d{2,3}.\d{4})", content)[0]
         quantity_released = re.findall(
