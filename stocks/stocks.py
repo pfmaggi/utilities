@@ -1,11 +1,10 @@
 #!/usr/bin/env -S uv run
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # dependencies = [
-#   "PyPDF2==3.*",
+#   "pypdf>=3.0.0",
 # ]
 # ///
-
 
 """
 MIT License
@@ -31,193 +30,219 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
-from datetime import datetime
-
-import PyPDF2
-import csv
-import os
-import re
 import argparse
+import csv
+import logging
+import re
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from datetime import datetime
+from pathlib import Path
+from typing import NamedTuple, Pattern
+
+import pypdf
+
+# --- Configuration & Constants ---
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+# Compile regex patterns once for performance.
+# Using named groups could further improve readability if logic gets complex.
+RE_AWARD_DATE: Pattern = re.compile(r".*Award.?Date: (\d{2}-\w{3}-\d{4})")
+RE_AWARD_ID: Pattern = re.compile(r".*Award.?ID: (C\d{6,7})")
+RE_RELEASE_DATE: Pattern = re.compile(r".*Release.?Date: (\d{2}-\w{3}-\d{4})")
+RE_VEST_PRICE: Pattern = re.compile(r".*FMV.?@.?Vest: (\$\d?,?\d{2,3}.\d{4})")
+RE_QTY_RELEASED: Pattern = re.compile(r".*Quantity.?Released: (\d{1,3}\.\d{4}\s?)")
+RE_QTY_NET: Pattern = re.compile(r".*Net.?Quantity: (\d{1,3}\.\d{4}\s?)")
+
+SPLIT_DATE = datetime(2022, 7, 15)
+SPLIT_FACTOR = 20.0
+
+
+class StockData(NamedTuple):
+    """Immutable data structure for parsed stock report info."""
+
+    award_date: str
+    award_id: str
+    release_date: str
+    vest_price: str
+    quantity_released: str
+    quantity_net: str
+
+
+class PDFParsingError(Exception):
+    """Custom exception for failing to parse expected fields in PDF."""
+
+    pass
 
 
 def organize_report(
-    release_date: str, award_id: str, old_filepath: str, output_path: str
-):
+    release_date_str: str, award_id: str, original_path: Path, output_dir: Path
+) -> None:
     """
-    Organize the report into a folder with the year of the release date.
-
-    :param release_date: str - Release date in format YYYY/MM/DD
-    :param award_id: str - Award ID
-    :param old_filepath: str - Full path to the original report file
-    :param output_path: str - Path to the output folder
+    Moves and renames the report into a Year-based directory structure.
     """
-    release_date_dt = datetime.strptime(release_date, "%Y/%m/%d")
-    year = str(release_date_dt.year)
-    year_folder = os.path.join(output_path, year)
-
-    if not os.path.exists(year_folder):
-        os.makedirs(year_folder)
-
-    # Define the new filename format.
-    new_filename = (
-        f"{release_date_dt.strftime('%Y%m%d')} - Release Confirm - {award_id}.pdf"
-    )
-
-    new_filepath = os.path.join(year_folder, new_filename)
-
-    os.rename(old_filepath, new_filepath)
-
-
-def parse(pdf_file_path: str) -> dict[str, str]:
-    """
-    Parse the given file and return a dictionary with the relevant details
-
-    :param pdf_file_path: str - full path to a pdf report
-    :return: Dict[str, str] - Dictionary of data extracted from PDF
-    """
-    reader = PyPDF2.PdfReader(open(pdf_file_path, "rb"))
-    page = reader.pages[0]
-    content = page.extract_text()
-
-    award_date = ""
-    award_id = ""
-    release_date = ""
-    vest_price = ""
-    quantity_released = ""
-    quantity_net = ""
-
     try:
-        award_date = re.findall(r".*Award.?Date: (\d{2}-\w{3}-\d{4})", content)[0]
-        award_id = re.findall(r".*Award.?ID: (C\d{6,7})", content)[0]
-        release_date = re.findall(r".*Release.?Date: (\d{2}-\w{3}-\d{4})", content)[0]
-        vest_price = re.findall(r".*FMV.?@.?Vest: (\$\d?,?\d{2,3}.\d{4})", content)[0]
-        quantity_released = re.findall(
-            r".*Quantity.?Released: (\d{1,3}\.\d{4}\s?)", content
-        )[0].strip()
-        quantity_net = re.findall(r".*Net.?Quantity: (\d{1,3}\.\d{4}\s?)", content)[
-            0
-        ].strip()
-    except IndexError:
-        # Handle cases where data extraction fails.
-        print(
-            f"There's an issue in the file: {pdf_file_path} with the content:\n{content}"
+        release_dt = datetime.strptime(release_date_str, "%Y/%m/%d")
+        year_folder = output_dir / str(release_dt.year)
+        year_folder.mkdir(parents=True, exist_ok=True)
+
+        new_filename = (
+            f"{release_dt.strftime('%Y%m%d')} - Release Confirm - {award_id}.pdf"
         )
-        print(f"award_date={award_date}")
-        print(f"award_id={award_id}")
-        print(f"release_date={release_date}")
-        print(f"vest_price={vest_price}")
-        print(f"quantity_released={quantity_released}")
-        print(f"quantity_net={quantity_net}")
-        exit(1)
+        new_filepath = year_folder / new_filename
 
-    # Reformat date strings to a standard format.
-    award_date_reformatted = datetime.strptime(award_date, "%d-%b-%Y").strftime(
-        "%Y/%m/%d"
-    )
-    release_date_dt = datetime.strptime(release_date, "%d-%b-%Y")
-    release_date_reformatted = release_date_dt.strftime("%Y/%m/%d")
+        # Use replace() which is atomic on modern POSIX, unlike os.rename
+        original_path.replace(new_filepath)
+        logger.debug(f"Moved: {original_path} -> {new_filepath}")
 
-    # Define the split date for the stock split.
-    split_date = datetime(2022, 7, 15)
-
-    # Adjust quantity for stock split before split_date
-    if release_date_dt < split_date:
-        quantity_released = f"{float(quantity_released) * 20:.3f}"
-        quantity_net = f"{float(quantity_net) * 20:.3f}"
-
-    return dict(
-        award_date=award_date_reformatted,
-        award_id=award_id,
-        release_date=release_date_reformatted,
-        vest_price=vest_price,
-        quantity_released=quantity_released,
-        quantity_net=quantity_net,
-    )
+    except (ValueError, OSError) as e:
+        logger.error(f"Failed to organize report {original_path}: {e}")
 
 
-def get_reports_filenames(path: str) -> list[str]:
+def extract_field(pattern: Pattern, content: str, field_name: str) -> str:
+    """Helper to extract regex match or raise a specific error."""
+    match = pattern.search(content)
+    if not match:
+        raise PDFParsingError(f"Could not find '{field_name}' in content.")
+    return match.group(1).strip()
+
+
+def parse_pdf(pdf_path: Path) -> StockData | None:
     """
-    Return a list of filenames included in the path folder and its subfolders.
-
-    :param path: str - folder path
-    :return: List[str] - List of full pathnames.
+    Parse a single PDF file and return extracted data.
+    Returns None if parsing fails, to allow the main loop to continue.
     """
-    file_paths: list[str] = []
-    for dirpath, _, filenames in os.walk(path):
-        for filename in filenames:
-            file_paths.append(os.path.join(dirpath, filename))
-    return sorted(file_paths)
+    try:
+        # pypdf is the modern replacement for PyPDF2
+        with pdf_path.open("rb") as f:
+            reader = pypdf.PdfReader(f)
+            if not reader.pages:
+                raise PDFParsingError("PDF is empty.")
+            content = reader.pages[0].extract_text()
+
+        # Extract raw strings
+        raw_award_date = extract_field(RE_AWARD_DATE, content, "Award Date")
+        award_id = extract_field(RE_AWARD_ID, content, "Award ID")
+        raw_release_date = extract_field(RE_RELEASE_DATE, content, "Release Date")
+        vest_price = extract_field(RE_VEST_PRICE, content, "Vest Price")
+        raw_qty_released = extract_field(RE_QTY_RELEASED, content, "Qty Released")
+        raw_qty_net = extract_field(RE_QTY_NET, content, "Qty Net")
+
+        # Format Dates
+        award_dt = datetime.strptime(raw_award_date, "%d-%b-%Y")
+        release_dt = datetime.strptime(raw_release_date, "%d-%b-%Y")
+
+        # Handle Stock Split Logic
+        qty_rel_float = float(raw_qty_released)
+        qty_net_float = float(raw_qty_net)
+
+        if release_dt < SPLIT_DATE:
+            qty_rel_float *= SPLIT_FACTOR
+            qty_net_float *= SPLIT_FACTOR
+
+        return StockData(
+            award_date=award_dt.strftime("%Y/%m/%d"),
+            award_id=award_id,
+            release_date=release_dt.strftime("%Y/%m/%d"),
+            vest_price=vest_price,
+            quantity_released=f"{qty_rel_float:.3f}",
+            quantity_net=f"{qty_net_float:.3f}",
+        )
+
+    except (PDFParsingError, ValueError) as e:
+        logger.error(f"Skipping {pdf_path.name}: {e}")
+        return None
+    except Exception as e:
+        logger.exception(f"Unexpected error processing {pdf_path.name}: {e}")
+        return None
 
 
-if __name__ == "__main__":
-    # Set up an argument parser to handle command-line inputs.
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Parse stock reports and generate a CSV file."
     )
     parser.add_argument(
         "-i",
         "--in_folder",
-        type=str,
-        default="./reports/",
-        help="Folder where the reports are located.",
+        type=Path,
+        default=Path("./reports/"),
+        help="Folder containing source PDF reports.",
     )
     parser.add_argument(
         "-o",
         "--out_folder",
-        type=str,
-        default="output",
-        help="Folder where the reports will be organized.",
+        type=Path,
+        default=Path("output"),
+        help="Destination folder for organized reports.",
     )
     parser.add_argument(
         "-m",
         "--move",
         action="store_true",
-        help="Organize the reports into folders.",
+        help="Organize (move/rename) reports into folders.",
     )
     parser.add_argument(
         "-w",
         "--write-csv",
         action="store_true",
-        help="Write the output to a CSV file.",
+        help="Write the parsed data to 'stocks.csv'.",
     )
+
     args = parser.parse_args()
 
-    # Set input and output paths from command-line arguments.
-    INPUT_PATH = args.in_folder
-    OUTPUT_PATH = args.out_folder
+    # Validation
+    if not args.in_folder.exists():
+        logger.error(f"Input folder '{args.in_folder}' does not exist.")
+        return
 
-    # Get the list of report filenames.
-    filepaths = get_reports_filenames(INPUT_PATH)
+    # Gather PDF files
+    # rglob allows recursive search easily
+    pdf_files = sorted(list(args.in_folder.rglob("*.pdf")))
+    logger.info(f"Found {len(pdf_files)} PDF documents.")
 
-    print(f"Release Docs: {len(filepaths)}")
-    quantity_sum: float = 0.0
-    rows = []
+    results: list[StockData] = []
 
-    # Process each report file.
-    for filepath in filepaths:
-        # Skip non-PDF files.
-        if not filepath.lower().endswith(".pdf"):
-            print(f"{filepath} not evaluated")
-            continue
+    # Process Concurrently
+    # PDF parsing is CPU-bound (text extraction) and IO-bound.
+    # ProcessPoolExecutor avoids the GIL for CPU heavy regex/parsing.
+    with ProcessPoolExecutor() as executor:
+        future_to_file = {executor.submit(parse_pdf, p): p for p in pdf_files}
 
-        # Parse the report to extract data.
-        data = parse(filepath)
-        rows.append(data)
+        for future in as_completed(future_to_file):
+            data = future.result()
+            if data:
+                results.append(data)
 
-        # Sum the net quantity of shares.
-        quantity_sum += float(data.get("quantity_net", 0))
+                # If we need to move files, we do it here strictly after successful parsing
+                if args.move:
+                    # Note: We pass original paths. In a real threaded env,
+                    # ensure file access doesn't conflict.
+                    # Since we parsed it already, moving it now is safe.
+                    original_path = future_to_file[future]
+                    organize_report(
+                        data.release_date, data.award_id, original_path, args.out_folder
+                    )
 
-        # Organize the report if the '--organize' flag is set.
-        if args.move:
-            organize_report(
-                data["release_date"], data["award_id"], filepath, OUTPUT_PATH
-            )
+    # Aggregation
+    total_shares = sum(float(r.quantity_net) for r in results)
+    logger.info(f"Successfully processed {len(results)} reports.")
+    logger.info(f"Total GOOG Shares: {total_shares:.3f}")
 
-    print(f"Processed {quantity_sum:.3f} GOOG Shares")
+    # Sort results by release_date (YYYY/MM/DD string format sorts chronologically)
+    results.sort(key=lambda x: x.release_date)
 
-    # Write the extracted data to a CSV file if the '--write-csv' flag is set.
-    if args.write_csv:
-        with open("stocks.csv", "w") as f_out:
-            writer = csv.DictWriter(f_out, fieldnames=data.keys(), lineterminator="\n")
-            writer.writeheader()
-            writer.writerows(rows)
+    if args.write_csv and results:
+        csv_path = Path("stocks.csv")
+        try:
+            with csv_path.open("w", newline="") as f:
+                writer = csv.writer(f)
+                # Header derived from NamedTuple fields
+                writer.writerow(StockData._fields)
+                writer.writerows(results)
+            logger.info(f"CSV written to {csv_path.resolve()}")
+        except OSError as e:
+            logger.error(f"Failed to write CSV: {e}")
+
+
+if __name__ == "__main__":
+    main()
