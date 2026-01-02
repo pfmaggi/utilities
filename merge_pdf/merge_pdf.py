@@ -1,11 +1,10 @@
 #!/usr/bin/env -S uv run
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.13"
 # dependencies = [
-#   "PyPDF2==3.*",
+#   "pypdf>=5.0.0",
 # ]
 # ///
-
 
 """
 MIT License
@@ -31,98 +30,96 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
-from PyPDF2 import PdfReader, PdfWriter
 import argparse
+import sys
 from pathlib import Path
-from typing import Optional
+
+import pypdf
 
 
-def process_args(
-    front: Path,
-    back: Path,
-    output: Optional[Path] = None,
-    overwrite: Optional[bool] = False,
+def merge_pdfs(
+    front_path: Path,
+    back_path: Path,
+    output_path: Path,
+    *,
+    overwrite: bool = False,
 ) -> None:
     """
-    Add all the pages alternating fronts and backs
-    note: backs are in reverse order
+    Interleave front and back PDF pages. Back pages are expected in reverse order.
+
+    Uses a 'Happy Path' pattern with early exits for validation.
     """
-    print(f"Processing {front} and {back}")
-    if not output:
-        output = Path("merged_pdf")
+    # Validation logic using Path methods
+    if not front_path.is_file():
+        raise FileNotFoundError(f"Front PDF missing: {front_path}")
+    if not back_path.is_file():
+        raise FileNotFoundError(f"Back PDF missing: {back_path}")
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(
+            f"Output exists (use --overwrite to bypass): {output_path}"
+        )
 
-    print(f"Output will be saved to: {output.resolve()}")
+    print(f"Merging: {front_path.name} + {back_path.name}")
 
-    # Validate input files exist
-    for f in [front, back]:
-        if not f.is_file():
-            raise FileNotFoundError(f"Input file not found: {f.resolve()}")
+    reader_front = pypdf.PdfReader(front_path)
+    reader_back = pypdf.PdfReader(back_path)
+    writer = pypdf.PdfWriter()
 
-    # Check output file exist
-    if output.is_file() and not overwrite:
-        raise FileExistsError(f"Output file already exist: {output.resolve()}")
+    front_pages = reader_front.pages
+    back_pages = reader_back.pages
 
-    fronts = PdfReader(front)
-    backs = PdfReader(back)
+    # Use zip with reversed back_pages for cleaner iteration
+    # Python 3.10+ zip(strict=True) ensures equal lengths if desired,
+    # but here we manually validate or handle differences.
+    if (f_len := len(front_pages)) != (b_len := len(back_pages)):
+        raise ValueError(f"Page mismatch: Front has {f_len} pages, Back has {b_len}.")
 
-    if len(backs.pages) != len(fronts.pages):
-        print(f"Pages {len(fronts.pages)} and {len(backs.pages)}")
-        raise ValueError("The two input PDFs need to have the same number of pages")
-    page_count = 2 * len(backs.pages)
-    writer = PdfWriter()
+    # Interleave pages
+    for f_page, b_page in zip(front_pages, reversed(back_pages)):
+        writer.add_page(f_page)
+        writer.add_page(b_page)
 
-    # Add all the pages alternating fronts and backs
-    # note: backs are in reverse order
-    for index, page in enumerate(fronts.pages):
-        writer.add_page(page)
-        writer.add_page(backs.pages[-1 - index])
+    # Use context manager for safe file writing
+    with output_path.open("wb") as f:
+        writer.write(f)
 
-    # save the new pdf to a file
-    if output:
-        with open(output.resolve(), "wb") as f:
-            writer.write(f)
-    else:
-        with open("merged.pdf", "wb") as f:
-            writer.write(f)
-
-    print(f"Merged {page_count} pages")
+    print(f"Successfully merged {len(writer.pages)} total pages to {output_path.name}")
 
 
-def parse_arguments() -> argparse.Namespace:
-    """Configure and parse command line arguments"""
+def parse_arguments(args: list[str]) -> argparse.Namespace:
+    """Configures CLI with modern defaults."""
     parser = argparse.ArgumentParser(
-        description="Merge two PDF, the back pages are expected to be in "
-        "reverse order: from last to first.",
+        description="Merge interleaved PDF scans (fronts + reversed backs).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-
-    # Required positional arguments
-    parser.add_argument("front", type=Path, help="PDF file with front pages")
-    parser.add_argument(
-        "back", type=Path, help="PDF file with back pages in reverse order"
-    )
-
-    # Optional output flag
+    parser.add_argument("front", type=Path, help="PDF with front pages")
+    parser.add_argument("back", type=Path, help="PDF with back pages (reverse order)")
     parser.add_argument(
         "-o",
         "--output",
         type=Path,
-        default=None,
-        help="Optional output filename for the merged PDF",
+        default=Path("merged_output.pdf"),
+        help="Output file path",
     )
-
-    # Optional overwrite flag
     parser.add_argument(
-        "-w", "--overwrite", action="store_true", help="Overwrite output file."
+        "-w", "--overwrite", action="store_true", help="Overwrite existing file"
     )
 
-    return parser.parse_args()
+    return parser.parse_args(args)
+
+
+def main() -> None:
+    """Main entry point with structured error handling."""
+    try:
+        ns = parse_arguments(sys.argv[1:])
+        merge_pdfs(ns.front, ns.back, ns.output, overwrite=ns.overwrite)
+    except (FileNotFoundError, FileExistsError, ValueError) as e:
+        print(f"Operation failed: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nAborted by user.", file=sys.stderr)
+        sys.exit(130)
 
 
 if __name__ == "__main__":
-    try:
-        args = parse_arguments()
-        process_args(args.front, args.back, args.output, args.overwrite)
-    except (FileNotFoundError, ValueError, FileExistsError) as e:
-        print(f"Error: {e}")
-        exit(1)
+    main()
