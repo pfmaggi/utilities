@@ -1,0 +1,25 @@
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: ts-pdf-merger
+    hostname: pdf-merger
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}  # We will set this in an .env file
+      - TS_STATE_DIR=/var/lib/tailscale
+    volumes:
+      - ts-state:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    restart: unless-stopped
+
+  pdf-app:
+    build: .
+    network_mode: "service:tailscale"
+    depends_on:
+      - tailscale
+    restart: unless-stopped
+
+volumes:
+  ts-state:

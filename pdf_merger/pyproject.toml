@@ -1,0 +1,9 @@
+[project]
+name = "pdf-merger-web"
+version = "1.0.0"
+description = "A web app to merge PDFs"
+requires-python = ">=3.13"
+dependencies = [
+    "streamlit>=1.41.0",
+    "pypdf>=5.1.0",
+]
