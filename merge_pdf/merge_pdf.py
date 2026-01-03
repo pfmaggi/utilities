@@ -31,10 +31,15 @@ SOFTWARE.
 """
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
 import pypdf
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 
 def merge_pdfs(
@@ -54,23 +59,39 @@ def merge_pdfs(
         raise FileNotFoundError(f"Front PDF missing: {front_path}")
     if not back_path.is_file():
         raise FileNotFoundError(f"Back PDF missing: {back_path}")
+
+    # Check extensions
+    if front_path.suffix.lower() != ".pdf":
+        logger.warning(
+            f"Front file '{front_path.name}' does not have a .pdf extension."
+        )
+    if back_path.suffix.lower() != ".pdf":
+        logger.warning(f"Back file '{back_path.name}' does not have a .pdf extension.")
+
     if output_path.exists() and not overwrite:
         raise FileExistsError(
             f"Output exists (use --overwrite to bypass): {output_path}"
         )
 
-    print(f"Merging: {front_path.name} + {back_path.name}")
+    # Ensure output directory exists
+    if not output_path.parent.exists():
+        logger.info(f"Creating output directory: {output_path.parent}")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    reader_front = pypdf.PdfReader(front_path)
-    reader_back = pypdf.PdfReader(back_path)
+    logger.info(f"Merging: {front_path.name} + {back_path.name}")
+
+    try:
+        reader_front = pypdf.PdfReader(front_path)
+        reader_back = pypdf.PdfReader(back_path)
+    except Exception as e:
+        raise ValueError(f"Error reading PDF files: {e}")
+
     writer = pypdf.PdfWriter()
 
     front_pages = reader_front.pages
     back_pages = reader_back.pages
 
     # Use zip with reversed back_pages for cleaner iteration
-    # Python 3.10+ zip(strict=True) ensures equal lengths if desired,
-    # but here we manually validate or handle differences.
     if (f_len := len(front_pages)) != (b_len := len(back_pages)):
         raise ValueError(f"Page mismatch: Front has {f_len} pages, Back has {b_len}.")
 
@@ -83,7 +104,9 @@ def merge_pdfs(
     with output_path.open("wb") as f:
         writer.write(f)
 
-    print(f"Successfully merged {len(writer.pages)} total pages to {output_path.name}")
+    logger.info(
+        f"Successfully merged {len(writer.pages)} total pages to {output_path.name}"
+    )
 
 
 def parse_arguments(args: list[str]) -> argparse.Namespace:
@@ -114,10 +137,10 @@ def main() -> None:
         ns = parse_arguments(sys.argv[1:])
         merge_pdfs(ns.front, ns.back, ns.output, overwrite=ns.overwrite)
     except (FileNotFoundError, FileExistsError, ValueError) as e:
-        print(f"Operation failed: {e}", file=sys.stderr)
+        logger.error(f"Operation failed: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
-        print("\nAborted by user.", file=sys.stderr)
+        logger.error("\nAborted by user.")
         sys.exit(130)
 
 
