@@ -91,6 +91,10 @@ def organize_report(
         )
         new_filepath = year_folder / new_filename
 
+        # Skip move if source and destination are identical
+        if original_path.resolve() == new_filepath.resolve():
+            return
+
         # Use replace() which is atomic on modern POSIX, unlike os.rename
         original_path.replace(new_filepath)
         logger.debug(f"Moved: {original_path} -> {new_filepath}")
@@ -172,8 +176,8 @@ def main() -> None:
         "-o",
         "--out_folder",
         type=Path,
-        default=Path("output"),
-        help="Destination folder for organized reports.",
+        default=None,
+        help="Destination folder for organized reports.\nUse input folder if not devined.",
     )
     parser.add_argument(
         "-m",
@@ -189,6 +193,9 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    # Logic: Use input folder if output folder is not provided
+    output_dir = args.out_folder if args.out_folder else args.in_folder
 
     # Validation
     if not args.in_folder.exists():
@@ -220,7 +227,7 @@ def main() -> None:
                     # Since we parsed it already, moving it now is safe.
                     original_path = future_to_file[future]
                     organize_report(
-                        data.release_date, data.award_id, original_path, args.out_folder
+                        data.release_date, data.award_id, original_path, output_dir
                     )
 
     # Aggregation
@@ -232,8 +239,10 @@ def main() -> None:
     results.sort(key=lambda x: x.release_date)
 
     if args.write_csv and results:
-        csv_path = Path("stocks.csv")
+        # Logic: Save CSV to the same folder used for output
+        csv_path = output_dir / "stocks.csv"
         try:
+            output_dir.mkdir(parents=True, exist_ok=True)
             with csv_path.open("w", newline="") as f:
                 writer = csv.writer(f)
                 # Header derived from NamedTuple fields
